@@ -1,0 +1,147 @@
+---
+title: "Case técnico"
+author: "Gustavo Cardoso"
+date: "2026-02-27"
+output: html_document
+
+---
+
+```{r setup, include=FALSE}
+# Configuração para ocultar mensagens de erro/aviso no relatório final
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+# Carregando os pacotes necessários
+library(tidyverse)
+library(readxl)
+library(lubridate)
+library(writexl) # Necessário para exportar o Excel final
+```
+
+## 1. Leitura e Consolidação dos Dados
+
+Conforme as instruções, os arquivos de input originais foram mantidos inalterados. O processo de consolidação e limpeza ocorre inteiramente via código.
+
+```{r leitura_dados}
+# Lendo os arquivos originais
+arquivos <- list.files(pattern = "\\.xlsx$")
+
+df_arquivos <- data.frame(nome_original = arquivos) %>%
+  mutate(
+    data_texto = str_extract(nome_original, "^\\w+\\s\\d{4}"),
+    data_formatada = my(data_texto)
+  ) %>%
+  arrange(data_formatada)
+
+# Função para ler cada arquivo e transformar o serial em Data
+ler_e_limpar <- function(caminho) {
+  tabela_temporaria <- read_excel(caminho)
+  tabela_temporaria[[1]] <- as.Date(as.numeric(tabela_temporaria[[1]]), origin = "1899-12-30")
+  tabela_temporaria$Arquivo_Fonte <- caminho
+  return(tabela_temporaria)
+}
+
+# Consolidação
+dados_finais <- df_arquivos$nome_original %>%
+  map_df(~ ler_e_limpar(.x))
+
+# Limpeza e tipagem correta das colunas
+dados_finais_limpos <- dados_finais %>%
+  mutate(
+    Data_Correta = as.Date(.[[1]]),
+    Preco_Num = as.numeric(.[[2]])
+  ) %>%
+  filter(!is.na(Preco_Num))
+
+# Exportando o resultado final para planilha (Requisito do Case)
+write_xlsx(dados_finais_limpos, "dados_consolidados_cobre.xlsx")
+```
+
+## 2. Respostas às Questões
+
+### Questões 1 e 2: Extremos de Cotação
+```{r extremos}
+# Menor Cotação
+min_data <- dados_finais_limpos[which.min(dados_finais_limpos$Preco_Num), ]
+cat("Menor cotação:", min_data$Preco_Num, "em", format(min_data$Data_Correta, "%d/%m/%Y"), "\n")
+
+# Maior Cotação
+max_data <- dados_finais_limpos[which.max(dados_finais_limpos$Preco_Num), ]
+cat("Maior cotação:", max_data$Preco_Num, "em", format(max_data$Data_Correta, "%d/%m/%Y"))
+```
+
+### Questão 3: Variação Média Mensal (2020 e 2024)
+```{r variacao_mensal}
+variacao_mensal <- dados_finais_limpos %>%
+  mutate(MesAno = floor_date(Data_Correta, "month")) %>%
+  group_by(MesAno) %>%
+  summarise(Preco_Medio = mean(Preco_Num, na.rm = TRUE)) %>%
+  mutate(Variacao = (Preco_Medio / lag(Preco_Medio) - 1))
+
+media_2020 <- mean(variacao_mensal$Variacao[year(variacao_mensal$MesAno) == 2020], na.rm = TRUE)
+media_2024 <- mean(variacao_mensal$Variacao[year(variacao_mensal$MesAno) == 2024], na.rm = TRUE)
+
+cat("Média 2020:", scales::percent(media_2020, accuracy = 0.01), "\n")
+cat("Média 2024:", scales::percent(media_2024, accuracy = 0.01))
+```
+
+### Questão 4: Variação Acumulada
+```{r var_acumulada}
+preco_inicial <- head(dados_finais_limpos$Preco_Num, 1)
+preco_final <- tail(dados_finais_limpos$Preco_Num, 1)
+var_total <- (preco_final / preco_inicial - 1)
+
+cat("Variação Acumulada (Jan/2020 a Dez/2025):", scales::percent(var_total, accuracy = 0.01))
+```
+
+## 3. Visualizações
+
+### Questão 5: Evolução do Preço Médio Mensal
+```{r plot_mensal}
+ggplot(variacao_mensal, aes(x = MesAno, y = Preco_Medio)) +
+  geom_line(color = "darkblue", size = 1) +
+  geom_point(color = "red", size = 1.5) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Cobre: Evolução do Preço Médio Mensal", x = "Ano", y = "USD/Tonne") +
+  theme_minimal()
+```
+
+### Questão 6: Fechamento Trimestral
+```{r plot_trimestral}
+dados_trimestrais <- dados_finais_limpos %>%
+  mutate(Trim_Label = paste0(year(Data_Correta), " - T", quarter(Data_Correta))) %>%
+  group_by(Trim_Label) %>%
+  filter(Data_Correta == max(Data_Correta)) %>%
+  ungroup() %>%
+  arrange(Data_Correta) %>%
+  mutate(Trim_Label = factor(Trim_Label, levels = Trim_Label))
+
+ggplot(dados_trimestrais, aes(x = Trim_Label, y = Preco_Num)) +
+  geom_col(fill = "steelblue", color = "darkblue", alpha = 0.8) +
+  geom_text(aes(label = round(Preco_Num, 0)), vjust = -0.5, size = 3) +
+  labs(title = "Cotação do Cobre no Fechamento de Cada Trimestre", x = "Ano - Trimestre", y = "Preço (USD)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+### Questão 7: Variação Anual Média
+```{r plot_anual}
+resumo_anual <- variacao_mensal %>%
+  group_by(Ano = year(MesAno)) %>%
+  summarise(Media_Anual = mean(Preco_Medio, na.rm = TRUE)) %>%
+  mutate(Var_Anual = (Media_Anual / lag(Media_Anual) - 1)) %>%
+  filter(Ano != 2020) 
+
+ggplot(resumo_anual, aes(x = factor(Ano), y = Var_Anual)) +
+  geom_col(fill = ifelse(resumo_anual$Var_Anual > 0, "darkgreen", "darkred"), alpha = 0.8) +
+  geom_text(aes(label = scales::percent(Var_Anual, accuracy = 0.1)), 
+            vjust = ifelse(resumo_anual$Var_Anual > 0, -0.5, 1.5), size = 3.5, fontface = "bold") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Variação Anual Média dos Preços do Cobre", x = "Ano", y = "Variação (%)") +
+  theme_minimal()
+```
+
+## 4. Análise Sintética (Questão 8)
+
+A trajetória dos preços do cobre entre 2020 e 2025 foi marcada por uma forte volatilidade inicial, seguida por um ciclo de valorização estrutural. No início de 2020, a pandemia de covid-19 provocou uma severa contração da demanda global, levando as cotações ao seu patamar mínimo no período (próximo a US$ 4.600 no mês de março). Já no ano de 2021, com a recuperação em marcha na maioria das economias, o preço teve uma apreciação notável. Em contrapartida, as pressões inflacionárias a partir de 2022 e a instabilidade do mercado imobiliário chinês, maior consumidor global do produto, atuaram para trazer os preços para patamares mais baixos. 
+
+Por fim, a partir de 2024 inicia-se uma tendência que se consolida no ano seguinte (atingindo o pico histórico acima de US$ 12.500), que é uma valorização acentuada do cobre. A razão para isto pode ser explicada pela importância que o componente tem para os setores ligados à transição energética e à própria cadeia de suprimentos das novas tecnologias de inteligência artificial e robótica. Além disso, a oferta global apresenta limites devido à restrição de minas de extração de cobre, uma circunstância que traz implicações econômicas e geopolíticas.
